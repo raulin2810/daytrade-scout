@@ -1,95 +1,68 @@
 # Daytrade Scout
 
-Lokale App für den Mac: Watchlist scannen, Schlagzeilen holen, technische
-Filter rechnen, daraus **Ideen zum Selbstprüfen** machen – inklusive
-Beispiel für Einstieg, Stop-Loss, Ziel und Stückzahl.
+Lokale Mac-App: Watchlist scannen, Marktumfeld lesen, drei Zeitrahmen
+prüfen, daraus **Ideen zum Selbstprüfen** bauen – mit Entry, Stop, zwei
+Zielen, Stückzahl und Paper-Journal.
 
-**Das ist keine Finanzberatung und kein fertiger Gelddruckautomat.**
-Niemand kann „das ganze Internet“ in Echtzeit auswerten und daraus
-zuverlässig sagen, welche Aktie du heute kaufen und wann du verkaufen
-sollst. Wer das verspricht, lügt. Diese App macht das bewusst nicht.
+**Keine Finanzberatung.** Präziser = mehr Filter und klarere Invalidierung,
+nicht hellsehen. Niemand durchsucht „das ganze Internet“ und sagt dir
+zuverlässig, was du heute kaufen sollst.
 
 Repo: https://github.com/raulin2810/daytrade-scout
 
-## Was du bekommst
+## Neu in dieser Version
 
-- Ein-Klick-Start auf dem Mac (`start.command`)
-- Watchlist liquider US-Titel (in `config.yaml` änderbar, auch `SAP.DE` usw.)
-- Kurse über Yahoo Finance (`yfinance`)
-- Schlagzeilen über Yahoo News + Google News RSS
-- Score aus EMA, RSI, MACD, Volumen, einfacher Nachrichten-Wortliste
-- Stop = aktueller Kurs ± 1,5 × ATR (einstellbar)
-- Ziel = 2R (einstellbar)
-- Positionsgröße aus deinem Kapital und Risiko pro Idee (Standard 0,5 %)
-- Candlestick-Chart je Idee
-- Läuft nur lokal, keine Broker-Anbindung, keine automatischen Orders
+- Marktregime aus **SPY / QQQ / IWM / VIX**
+- Multi-Timeframe: Tag + 1h + 15m
+- **VWAP**, Opening Range, Swings
+- Relativstärke gegen SPY
+- Earnings-Warnung (5 Tage)
+- Note A/B/C statt jeder Idee
+- WAIT-Setup: nicht hinterherlaufen
+- Stop aus ATR **und** Struktur
+- Zwei Ziele (1,5R / 2,5R)
+- Batch-Download (schneller)
+- Optionale DE-Watchlist
+- Paper-Journal + CSV-Export
+- Chart mit Entry/Stop/VWAP/OR
 
-## Was du nicht bekommst
-
-- Keine Garantie, keinen nachweisbaren Edge
-- Kein Crawling „des ganzen Internets“
-- Keine Live-Millisekunden-Daten wie bei einem Profi-Terminal
-- Keine Steuer- oder Rechtsberatung
-
-Daytrading ist hochspekulativ. Ein Stop-Loss schützt nicht vor Gaps
-(Kurslücken über Nacht oder nach Zahlen).
-
-## Mac: so startest du
-
-1. [Python 3](https://www.python.org/downloads/) installieren, falls nicht vorhanden.
-   Im Terminal prüfen: `python3 --version`
-2. Repo holen:
+## Start auf dem Mac
 
 ```bash
 git clone https://github.com/raulin2810/daytrade-scout.git
 cd daytrade-scout
 chmod +x start.command start.sh
-```
-
-3. `start.command` im Finder doppelklicken
-   **oder** im Terminal:
-
-```bash
 ./start.sh
 ```
 
-4. Browser öffnet (oder du gehst auf) http://localhost:8501
-5. Kapital eintragen → **Heute scannen**
+Oder `start.command` im Finder doppelklicken. Browser: http://localhost:8501
 
-Beim ersten Start legt das Skript ein virtuelles Environment an und
-installiert die Pakete aus `requirements.txt`. Das dauert eine Minute.
+Falls das Repo schon existiert:
 
-### Falls macOS „unbekanntes Skript“ blockiert
+```bash
+cd daytrade-scout
+git pull
+./start.sh
+```
 
 ```bash
 xattr -d com.apple.quarantine start.command start.sh
-chmod +x start.command start.sh
 ```
 
-## Täglich nutzen
+Python 3 wird gebraucht. Erster Start installiert die Pakete.
 
-Es gibt keinen Server in der Cloud. „Täglich“ heißt: du startest die App
-morgens (am besten vor oder kurz nach US-Open, 15:30 Uhr MESZ / 9:30 ET)
-und klickst auf Scannen.
+## Nutzung
 
-Wenn du eine Erinnerung willst, reicht ein Kalendereintrag oder
-`launchd` – die App selbst führt keine Trades aus.
+1. Kapital und Risiko einstellen (Standard 0,5 %).
+2. Optional deutsche Titel aktivieren.
+3. **Scan starten**.
+4. Nur A/B ansehen, Playbook lesen, Invalidierung setzen.
+5. Idee ins Journal legen, wenn du sie wirklich handelst (Paper zählt).
 
-## Watchlist anpassen
+Am Wochenende ist der Scan ein **Plan für die nächste US-Session**,
+kein Live-Daytrade.
 
-Datei `config.yaml` öffnen und Ticker ergänzen. Yahoo-Syntax:
+## Grenzen
 
-- USA: `AAPL`, `NVDA`
-- Deutschland: `SAP.DE`, `VOW3.DE`
-- ETF: `SPY`, `QQQ`
-
-## Limits der Datenquelle
-
-`yfinance` nutzt inoffizielle Yahoo-Schnittstellen. Die können
-raten-limitieren oder zeitweise leer antworten. Für echtes Live-Trading
-brauchst du einen Broker mit eigener Marktdaten-API.
-
-## Haftungsausschluss
-
-Siehe [DISCLAIMER.md](DISCLAIMER.md). Nutzung auf eigenes Risiko.
-MIT-Lizenz, siehe [LICENSE](LICENSE).
+Yahoo-Daten können verzögert sein. Stops schützen nicht vor Gaps.
+Daytrading kann das Kapital vernichten. Siehe [DISCLAIMER.md](DISCLAIMER.md).

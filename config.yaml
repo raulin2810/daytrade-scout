@@ -1,8 +1,8 @@
-# Watchlist: liquide US-Titel, die sich eher fürs Intraday eignen.
-# Du kannst hier frei Symbole ergänzen (Yahoo-Ticker, z. B. SAP.DE).
+# Watchlist: liquide Titel für Intraday. Yahoo-Ticker.
 universe:
   - SPY
   - QQQ
+  - IWM
   - AAPL
   - MSFT
   - NVDA
@@ -13,22 +13,74 @@ universe:
   - GOOGL
   - NFLX
   - AVGO
-  - JPM
-  - BAC
-  - XOM
   - MU
   - SMCI
   - PLTR
   - COIN
-  - IWM
+  - JPM
+  - BAC
+  - XOM
+  - CAT
+  - BA
+  - DIS
+  - CRM
+  - ORCL
+
+de_universe:
+  - SAP.DE
+  - SIE.DE
+  - ALV.DE
+  - DTE.DE
+  - BAS.DE
+  - BMW.DE
+  - VOW3.DE
+  - RHM.DE
+  - DBK.DE
+  - IFX.DE
+
+benchmarks:
+  spy: SPY
+  qqq: QQQ
+  iwm: IWM
+  vix: "^VIX"
+
+sectors:
+  AAPL: XLK
+  MSFT: XLK
+  NVDA: XLK
+  AMD: XLK
+  AVGO: XLK
+  MU: XLK
+  SMCI: XLK
+  PLTR: XLK
+  CRM: XLK
+  ORCL: XLK
+  META: XLC
+  GOOGL: XLC
+  NFLX: XLC
+  DIS: XLC
+  JPM: XLF
+  BAC: XLF
+  XOM: XLE
+  TSLA: XLY
+  AMZN: XLY
+  CAT: XLI
+  BA: XLI
+  COIN: XLK
 
 risk:
-  default_capital_eur: 10000
+  default_capital: 10000
   default_risk_pct: 0.5
   max_ideas: 5
-  atr_stop_mult: 1.5
-  reward_risk: 2.0
-  min_avg_volume: 2000000
+  max_open_heat_pct: 1.5
+  atr_stop_mult: 1.2
+  swing_buffer_atr: 0.15
+  reward_risk_t1: 1.5
+  reward_risk_t2: 2.5
+  min_avg_volume: 1500000
+  min_price: 8.0
+  max_atr_pct: 8.0
+  min_confluence: 3
 
 news:
-  max_headlines_per_symbol: 6
+  max_headlines_per_symbol: 7
