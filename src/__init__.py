@@ -1,0 +1,1 @@
+# Daytrade Scout package

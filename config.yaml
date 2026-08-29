@@ -1,0 +1,34 @@
+# Watchlist: liquide US-Titel, die sich eher fürs Intraday eignen.
+# Du kannst hier frei Symbole ergänzen (Yahoo-Ticker, z. B. SAP.DE).
+universe:
+  - SPY
+  - QQQ
+  - AAPL
+  - MSFT
+  - NVDA
+  - TSLA
+  - AMD
+  - META
+  - AMZN
+  - GOOGL
+  - NFLX
+  - AVGO
+  - JPM
+  - BAC
+  - XOM
+  - MU
+  - SMCI
+  - PLTR
+  - COIN
+  - IWM
+
+risk:
+  default_capital_eur: 10000
+  default_risk_pct: 0.5
+  max_ideas: 5
+  atr_stop_mult: 1.5
+  reward_risk: 2.0
+  min_avg_volume: 2000000
+
+news:
+  max_headlines_per_symbol: 6
