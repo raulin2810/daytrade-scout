@@ -12,14 +12,17 @@ POS = {
     "beat", "beats", "surge", "surges", "rally", "rallies", "record", "upgrade",
     "upgraded", "growth", "profit", "profits", "strong", "bullish", "soar",
     "soars", "outperform", "buyback", "raises", "raised", "optimistic",
+    "breakout", "contract", "award", "approval", "approved", "partnership",
     "gewinn", "steigt", "steigen", "rekord", "stark", "positiv", "kaufen",
+    "auftrag",
 }
 NEG = {
     "miss", "misses", "fall", "falls", "drop", "drops", "downgrade",
     "downgraded", "lawsuit", "probe", "weak", "bearish", "cut", "cuts",
     "warning", "layoff", "layoffs", "fraud", "recall", "ban", "crash",
-    "sinks", "plunge", "plunges", "verlust", "fällt", "fallen", "schwach",
-    "klage", "warnung", "negativ", "verkauf",
+    "sinks", "plunge", "plunges", "investigation", "delay", "delayed",
+    "verlust", "fällt", "fallen", "schwach", "klage", "warnung", "negativ",
+    "verkauf", "skandal", "rückruf",
 }
 
 
@@ -29,12 +32,17 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def yahoo_headlines(symbol: str, limit: int = 6) -> list[str]:
+def yahoo_headlines(symbol: str, limit: int = 7) -> list[str]:
     headlines: list[str] = []
     try:
         news = yf.Ticker(symbol).news or []
         for item in news:
-            title = item.get("title") or item.get("content", {}).get("title")
+            content = item.get("content") if isinstance(item, dict) else None
+            title = None
+            if isinstance(item, dict):
+                title = item.get("title")
+            if not title and isinstance(content, dict):
+                title = content.get("title")
             if title:
                 headlines.append(_clean(str(title)))
             if len(headlines) >= limit:
@@ -44,8 +52,7 @@ def yahoo_headlines(symbol: str, limit: int = 6) -> list[str]:
     return headlines
 
 
-def google_news_headlines(symbol: str, limit: int = 6) -> list[str]:
-    query = f"{symbol} stock OR aktie"
+def rss_headlines(query: str, limit: int = 6) -> list[str]:
     url = (
         "https://news.google.com/rss/search?"
         f"q={query.replace(' ', '+')}&hl=en-US&gl=US&ceid=US:en"
@@ -62,12 +69,18 @@ def google_news_headlines(symbol: str, limit: int = 6) -> list[str]:
     return headlines
 
 
-def collect_headlines(symbol: str, limit: int = 6) -> list[str]:
-    seen = set()
+def collect_headlines(symbol: str, name: str = "", limit: int = 7) -> list[str]:
+    seen: set[str] = set()
     out: list[str] = []
-    for title in yahoo_headlines(symbol, limit) + google_news_headlines(symbol, limit):
+    queries = [f"{symbol} stock", f"{symbol} aktie"]
+    if name and name.upper() != symbol.upper():
+        queries.append(f"{name} stock OR aktie")
+    bag = yahoo_headlines(symbol, limit)
+    for q in queries:
+        bag.extend(rss_headlines(q, limit))
+    for title in bag:
         key = title.lower()
-        if key in seen:
+        if key in seen or len(title) < 12:
             continue
         seen.add(key)
         out.append(title)
@@ -85,5 +98,8 @@ def sentiment_score(headlines: Iterable[str]) -> float:
         tokens = set(re.findall(r"[a-zäöüß]+", text))
         score += len(tokens & POS)
         score -= len(tokens & NEG)
-    # Normierung grob auf [-1, 1]
+        if "downgrade" in text or "profit warning" in text:
+            score -= 2
+        if "upgrade" in text or "beats" in text:
+            score += 1.5
     return max(-1.0, min(1.0, score / max(len(texts) * 2.0, 1.0)))
