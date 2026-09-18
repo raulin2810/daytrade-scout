@@ -11,8 +11,11 @@ from src.indicators import (
     atr,
     bollinger,
     ema,
+    intra_bias,
+    intra_rvol,
     macd_hist,
     opening_range,
+    overnight_gap,
     rsi,
     session_vwap,
     swing_points,
@@ -64,18 +67,29 @@ class Idea:
     swing_low: Optional[float]
     rel_spy: float
     earnings_soon: bool
+    quality: float = 0.0
+    gap_pct: float = 0.0
+    rvol: float = 1.0
+    affordability: str = ""
     extras: dict = field(default_factory=dict)
 
 
-def size_position(entry: float, stop: float, capital: float, risk_pct: float) -> tuple[int, float, float]:
+def size_position(
+    entry: float,
+    stop: float,
+    capital: float,
+    risk_pct: float,
+    max_position_pct: float = 0.25,
+) -> tuple[int, float, float]:
     risk_per_share = abs(entry - stop)
     risk_amount = capital * (risk_pct / 100.0)
     if risk_per_share <= 0 or entry <= 0:
         return 0, 0.0, risk_amount
     shares = int(risk_amount // risk_per_share)
     position_value = shares * entry
-    if position_value > capital * 0.35:
-        shares = int((capital * 0.35) // entry)
+    cap = capital * max_position_pct
+    if position_value > cap:
+        shares = int(cap // entry)
         position_value = shares * entry
     return max(shares, 0), position_value, risk_amount
 
@@ -99,6 +113,7 @@ def analyze_symbol(
     news_score: float,
     headlines: list[str],
     cfg: dict,
+    iwm_daily: pd.DataFrame | None = None,
 ) -> dict:
     warnings: list[str] = []
     reasons: list[str] = []
@@ -124,6 +139,7 @@ def analyze_symbol(
         bb_pos = float((price - lower.iloc[-1]) / (upper.iloc[-1] - lower.iloc[-1]))
 
     rel = _rel_strength(daily, spy_daily)
+    rel_iwm = _rel_strength(daily, iwm_daily) if iwm_daily is not None else 0.0
     swing_h, swing_l = swing_points(daily if hourly is None or hourly.empty else hourly)
     or_high, or_low, or_day = opening_range(intra) if intra is not None and not intra.empty else (None, None, None)
     last_vwap = None
@@ -132,11 +148,17 @@ def analyze_symbol(
         if not vw.empty:
             last_vwap = float(vw.dropna().iloc[-1])
 
+    gap = overnight_gap(daily, intra) if intra is not None else 0.0
+    gap_pct = abs(gap) * 100
+    rvol = intra_rvol(intra) if intra is not None else 1.0
+    bias_15 = intra_bias(intra) if intra is not None else "FLAT"
+
     long_pts = 0.0
     short_pts = 0.0
     conf_long = 0
     conf_short = 0
 
+    # --- Trend ---
     if ema9_d > ema21_d > ema50_d:
         long_pts += 18
         conf_long += 1
@@ -152,6 +174,7 @@ def analyze_symbol(
         short_pts += 8
         reasons.append("Kurzfristiger Tagesbias short")
 
+    # --- RSI ---
     if 48 <= daily_rsi <= 68:
         long_pts += 12
         conf_long += 1
@@ -167,6 +190,7 @@ def analyze_symbol(
         long_pts += 6
         warnings.append("Tages-RSI überverkauft – Short nur auf Gegenbounce")
 
+    # --- MACD ---
     if macd_now > 0 and macd_now > macd_prev:
         long_pts += 10
         conf_long += 1
@@ -176,6 +200,7 @@ def analyze_symbol(
         conf_short += 1
         reasons.append("MACD-Histogramm fällt")
 
+    # --- ADX ---
     if daily_adx >= 22:
         if ema9_d > ema21_d:
             long_pts += 8
@@ -187,20 +212,38 @@ def analyze_symbol(
     else:
         warnings.append(f"ADX {daily_adx:.0f} – eher Range, Fehlausbrüche möglich")
 
+    # --- Volumen ---
     if vol_ratio >= 1.25:
         long_pts += 6
         short_pts += 6
         reasons.append(f"Volumen {vol_ratio:.1f}× – Interesse da")
+    if rvol >= 1.4:
+        long_pts += 5
+        short_pts += 5
+        conf_long += 1 if bias_15 == "LONG" else 0
+        conf_short += 1 if bias_15 == "SHORT" else 0
+        reasons.append(f"Intraday-RVOL {rvol:.1f}× – Aktivität erhöht")
 
+    # --- Relativstärke SPY + IWM (Mid-Caps) ---
     if rel > 0.015:
         long_pts += 10
         conf_long += 1
-        reasons.append(f"Stärker als SPY über 5 Tage ({rel*100:+.1f}%)")
+        reasons.append(f"Stärker als SPY 5d ({rel*100:+.1f}%)")
     elif rel < -0.015:
         short_pts += 10
         conf_short += 1
-        reasons.append(f"Schwächer als SPY über 5 Tage ({rel*100:+.1f}%)")
+        reasons.append(f"Schwächer als SPY 5d ({rel*100:+.1f}%)")
 
+    if rel_iwm > 0.02:
+        long_pts += 8
+        conf_long += 1
+        reasons.append(f"Stärker als IWM 5d ({rel_iwm*100:+.1f}%) – Mid-Cap-Momentum")
+    elif rel_iwm < -0.02:
+        short_pts += 8
+        conf_short += 1
+        reasons.append(f"Schwächer als IWM 5d ({rel_iwm*100:+.1f}%)")
+
+    # --- 1h ---
     if hourly is not None and len(hourly) >= 30:
         h_ema9 = float(ema(hourly["Close"], 9).iloc[-1])
         h_ema21 = float(ema(hourly["Close"], 21).iloc[-1])
@@ -212,6 +255,14 @@ def analyze_symbol(
             short_pts += 10
             conf_short += 1
             reasons.append("1h-Trend bestätigt Short")
+
+    # --- 15m Bias ---
+    if bias_15 == "LONG":
+        long_pts += 7
+        reasons.append("15m-Bias long")
+    elif bias_15 == "SHORT":
+        short_pts += 7
+        reasons.append("15m-Bias short")
 
     setup: Setup = "NONE"
     if last_vwap:
@@ -252,31 +303,49 @@ def analyze_symbol(
         short_pts += 2
         warnings.append("Hoher VIX – Größe halbieren")
 
+    # --- Gap-Filter (präziser: große Gaps = mehr Fakeouts) ---
+    gap_soft = float(cfg.get("max_gap_pct_soft", 3.0))
+    gap_hard = float(cfg.get("max_gap_pct_hard", 6.0))
+    if gap_pct >= gap_hard:
+        warnings.append(f"Overnight-Gap {gap_pct:.1f}% – zu weit für sauberes Daytrade-Setup")
+        long_pts -= 15
+        short_pts -= 15
+    elif gap_pct >= gap_soft:
+        warnings.append(f"Gap {gap_pct:.1f}% – nur mit Extra-Confluence")
+        long_pts -= 5
+        short_pts -= 5
+
     if snap.earnings_soon:
-        warnings.append("Zahlen innerhalb von 5 Tagen – Gap-Risiko, Daytrade nur mit hartem Stop")
-        long_pts -= 8
-        short_pts -= 8
+        warnings.append("Zahlen innerhalb von 5 Tagen – Gap-Risiko")
+        long_pts -= 10
+        short_pts -= 10
 
     if snap.week52_high and price / snap.week52_high > 0.97:
         reasons.append("Nahe 52-Wochen-Hoch – Breakout oder Fakeout")
     if snap.short_ratio and snap.short_ratio >= 4:
-        reasons.append(f"Short Ratio {snap.short_ratio:.1f} – Squeeze möglich, kein Muss")
+        reasons.append(f"Short Ratio {snap.short_ratio:.1f} – Squeeze möglich")
 
-    min_price = float(cfg.get("min_price", 8))
-    max_atr_pct = float(cfg.get("max_atr_pct", 8))
+    min_price = float(cfg.get("min_price", 3))
+    max_price = float(cfg.get("max_price", 120))
+    max_atr_pct = float(cfg.get("max_atr_pct", 9))
     min_conf = int(cfg.get("min_confluence", 3))
+    min_score_l = float(cfg.get("min_score_long", 44))
+    min_score_s = float(cfg.get("min_score_short", 44))
+
     if snap.price < min_price:
         return _empty("Preis zu niedrig / unruhig")
+    if snap.price > max_price:
+        warnings.append(f"Preis {snap.price:.0f} – mit kleinem Konto wenige Shares")
     if atr_pct > max_atr_pct:
-        warnings.append(f"ATR {atr_pct:.1f}% extrem – ungeeignet für enge Daytrade-Stops")
+        warnings.append(f"ATR {atr_pct:.1f}% extrem – Stops schwer")
         long_pts -= 12
         short_pts -= 12
 
-    if long_pts >= short_pts and long_pts >= 42 and conf_long >= min_conf and regime.long_ok:
+    if long_pts >= short_pts and long_pts >= min_score_l and conf_long >= min_conf and regime.long_ok:
         side: Side = "LONG"
         score = long_pts
         confluence = conf_long
-    elif short_pts > long_pts and short_pts >= 42 and conf_short >= min_conf and regime.short_ok:
+    elif short_pts > long_pts and short_pts >= min_score_s and conf_short >= min_conf and regime.short_ok:
         side = "SHORT"
         score = short_pts
         confluence = conf_short
@@ -286,7 +355,19 @@ def analyze_symbol(
         confluence = max(conf_long, conf_short)
         reasons.append("Confluence zu dünn oder gegen das Marktumfeld")
 
-    atr_mult = float(cfg.get("atr_stop_mult", 1.2))
+    # Qualitäts-Score 0–100 (Filter, keine Prognose-Garantie)
+    quality = min(100.0, max(0.0, score * 0.7 + confluence * 6))
+    if snap.earnings_soon:
+        quality -= 15
+    if gap_pct >= gap_soft:
+        quality -= 8
+    if regime.vix >= 28:
+        quality -= 10
+    if rvol >= 1.3 and side != "SKIP":
+        quality += 5
+    quality = round(max(0.0, min(100.0, quality)), 1)
+
+    atr_mult = float(cfg.get("atr_stop_mult", 1.25))
     swing_buf = float(cfg.get("swing_buffer_atr", 0.15))
     rr1 = float(cfg.get("reward_risk_t1", 1.5))
     rr2 = float(cfg.get("reward_risk_t2", 2.5))
@@ -303,7 +384,7 @@ def analyze_symbol(
             setup = "WAIT"
             entry = last_vwap
             stop = min(stop, entry - 0.7 * daily_atr)
-            reasons.append("Preis schon gestreckt – Plan: Rücksetzer an VWAP abwarten")
+            reasons.append("Preis gestreckt – Rücksetzer an VWAP abwarten")
         elif last_vwap and abs(price - last_vwap) / price < 0.004:
             setup = "VWAP_RECLAIM"
         elif setup == "NONE":
@@ -330,7 +411,7 @@ def analyze_symbol(
             setup = "WAIT"
             entry = last_vwap
             stop = max(stop, entry + 0.7 * daily_atr)
-            reasons.append("Preis schon gestreckt nach unten – Plan: Rücksetzer an VWAP shorten")
+            reasons.append("Nach unten gestreckt – Rücksetzer an VWAP shorten")
         elif setup == "NONE":
             setup = "PULLBACK"
         risk = stop - entry
@@ -341,8 +422,7 @@ def analyze_symbol(
         invalidation = f"15m-Schluss über {stop:.2f} oder VWAP-Reclaim gegen die Position"
         playbook = (
             f"Short nur wenn 15m unter {entry:.2f} bleibt. "
-            f"Stop {stop:.2f}. Ziel 1 {t1:.2f}, Ziel 2 {t2:.2f}. "
-            "Shorts sind bei manchen Brokern teurer."
+            f"Stop {stop:.2f}. Ziel 1 {t1:.2f}, Ziel 2 {t2:.2f}."
         )
     else:
         stop = price - atr_stop
@@ -352,9 +432,9 @@ def analyze_symbol(
         invalidation = "Kein Trade"
         playbook = "Heute stehen lassen. Kein Setup erzwingen."
 
-    if confluence >= 5 and side != "SKIP" and not snap.earnings_soon and regime.vix < 26:
+    if confluence >= 5 and side != "SKIP" and not snap.earnings_soon and regime.vix < 26 and quality >= 55:
         grade: Grade = "A"
-    elif confluence >= 4 and side != "SKIP":
+    elif confluence >= 4 and side != "SKIP" and quality >= 42:
         grade = "B"
     elif side != "SKIP":
         grade = "C"
@@ -367,6 +447,7 @@ def analyze_symbol(
         "grade": grade,
         "score": round(float(score), 1),
         "confluence": int(confluence),
+        "quality": quality,
         "entry": float(entry),
         "stop": float(stop),
         "target1": float(t1),
@@ -375,7 +456,7 @@ def analyze_symbol(
         "playbook": playbook,
         "atr": daily_atr,
         "atr_pct": atr_pct,
-        "reasons": reasons[:8],
+        "reasons": reasons[:10],
         "warnings": warnings,
         "rsi": daily_rsi,
         "adx": daily_adx,
@@ -386,8 +467,12 @@ def analyze_symbol(
         "swing_high": swing_h,
         "swing_low": swing_l,
         "rel_spy": rel,
+        "rel_iwm": rel_iwm,
         "bb_pos": bb_pos,
         "or_day": or_day,
+        "gap_pct": gap_pct,
+        "rvol": rvol,
+        "bias_15": bias_15,
     }
 
 
@@ -398,6 +483,7 @@ def _empty(msg: str) -> dict:
         "grade": "F",
         "score": 0.0,
         "confluence": 0,
+        "quality": 0.0,
         "entry": 0.0,
         "stop": 0.0,
         "target1": 0.0,
@@ -417,6 +503,10 @@ def _empty(msg: str) -> dict:
         "swing_high": None,
         "swing_low": None,
         "rel_spy": 0.0,
+        "rel_iwm": 0.0,
         "bb_pos": 0.5,
         "or_day": None,
+        "gap_pct": 0.0,
+        "rvol": 1.0,
+        "bias_15": "FLAT",
     }

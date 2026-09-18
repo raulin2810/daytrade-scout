@@ -34,7 +34,10 @@ def run_scan(
     )
 
     snaps = snapshots(symbols)
-    min_vol = float(risk_cfg.get("min_avg_volume", 1_500_000))
+    min_vol = float(risk_cfg.get("min_avg_volume", 800_000))
+    min_vol_mid = float(risk_cfg.get("min_avg_volume_mid", 500_000))
+    max_pos_pct = float(risk_cfg.get("max_position_pct", 0.25))
+    prefer_under = float(risk_cfg.get("prefer_mid_cap_under", 80))
 
     prelim: list[tuple[str, Snapshot, dict]] = []
     for symbol in symbols:
@@ -42,7 +45,11 @@ def run_scan(
         daily = daily_map.get(symbol)
         if snap is None or daily is None or daily.empty:
             continue
-        if snap.avg_volume and snap.avg_volume < min_vol and not symbol.endswith(".DE"):
+        # Liquidität: DE etwas lockerer, US Mid mindestens mid-Schwelle
+        vol_floor = min_vol_mid if (snap.price and snap.price < prefer_under) else min_vol
+        if symbol.endswith(".DE"):
+            vol_floor = min(vol_floor, 200_000)
+        if snap.avg_volume and snap.avg_volume < vol_floor:
             continue
         raw = analyze_symbol(
             symbol,
@@ -55,15 +62,18 @@ def run_scan(
             news_score=0.0,
             headlines=[],
             cfg=risk_cfg,
+            iwm_daily=daily_map.get(iwm_t),
         )
         prelim.append((symbol, snap, raw))
 
-    prelim.sort(key=lambda x: x[2]["score"], reverse=True)
-    news_limit = 8
+    prelim.sort(key=lambda x: (x[2].get("quality", 0), x[2]["score"]), reverse=True)
+    news_limit = 10
     news_cache: dict[str, tuple[list[str], float]] = {}
     if include_news:
         for symbol, snap, _ in prelim[:news_limit]:
-            heads = collect_headlines(symbol, snap.name, int(cfg.get("news", {}).get("max_headlines_per_symbol", 7)))
+            heads = collect_headlines(
+                symbol, snap.name, int(cfg.get("news", {}).get("max_headlines_per_symbol", 7))
+            )
             news_cache[symbol] = (heads, sentiment_score(heads))
 
     ideas: list[Idea] = []
@@ -80,13 +90,30 @@ def run_scan(
             news_score=nscore,
             headlines=heads,
             cfg=risk_cfg,
+            iwm_daily=daily_map.get(iwm_t),
         )
         shares, pos_val, risk_amt = size_position(
-            raw["entry"], raw["stop"], capital, risk_pct
+            raw["entry"],
+            raw["stop"],
+            capital,
+            risk_pct,
+            max_position_pct=max_pos_pct,
         )
         if regime.vix >= 28:
             shares = shares // 2
             pos_val = shares * raw["entry"]
+
+        # Affordability-Hinweis für kleines Konto
+        afford = ""
+        if snap.price >= prefer_under:
+            afford = "teuer/share – wenige Stück"
+        elif shares >= 5:
+            afford = "gut handelbar"
+        elif shares >= 1:
+            afford = "knapp handelbar"
+        else:
+            afford = "Position 0 – Risiko/Preis unpassend"
+
         ideas.append(
             Idea(
                 symbol=symbol,
@@ -126,10 +153,30 @@ def run_scan(
                 swing_low=raw["swing_low"],
                 rel_spy=raw["rel_spy"],
                 earnings_soon=snap.earnings_soon,
-                extras={"sector": snap.sector, "or_day": raw.get("or_day"), "short_ratio": snap.short_ratio},
+                quality=float(raw.get("quality", 0)),
+                gap_pct=float(raw.get("gap_pct", 0)),
+                rvol=float(raw.get("rvol", 1)),
+                affordability=afford,
+                extras={
+                    "sector": snap.sector,
+                    "or_day": raw.get("or_day"),
+                    "short_ratio": snap.short_ratio,
+                    "rel_iwm": raw.get("rel_iwm"),
+                    "bias_15": raw.get("bias_15"),
+                    "market_cap": snap.market_cap,
+                },
             )
         )
 
     rank = {"A": 3, "B": 2, "C": 1, "F": 0}
-    ideas.sort(key=lambda i: (i.side != "SKIP", rank.get(i.grade, 0), i.score), reverse=True)
+    ideas.sort(
+        key=lambda i: (
+            i.side != "SKIP",
+            rank.get(i.grade, 0),
+            i.quality,
+            i.score,
+            i.shares > 0,
+        ),
+        reverse=True,
+    )
     return regime, ideas
