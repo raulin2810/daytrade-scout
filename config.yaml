@@ -2,11 +2,9 @@
 # Big Caps bleiben optional; Standard-Universum mischt liquide Mid/Smaller.
 
 universe:
-  # Core / liquide (auch mit kleinem Konto handelbar über wenige Shares)
   - SPY
   - QQQ
   - IWM
-  # Mid / wachstumsstärker, oft günstigere Stückpreise
   - SOFI
   - HOOD
   - RIVN
@@ -38,7 +36,6 @@ universe:
   - SE
   - NU
   - GRAB
-  # selektive Large (optional, teurer pro Share)
   - AMD
   - MU
   - SMCI
@@ -94,24 +91,20 @@ risk:
   default_risk_pct: 0.5
   max_ideas: 5
   max_open_heat_pct: 1.5
-  # bei 4k: max. ~25% Kapital in einer Position
   max_position_pct: 0.25
   atr_stop_mult: 1.25
   swing_buffer_atr: 0.15
   reward_risk_t1: 1.5
   reward_risk_t2: 2.5
-  # Mid-Caps: Volumen-Schwelle etwas niedriger, aber nicht Penny
   min_avg_volume: 800000
   min_avg_volume_mid: 500000
   min_price: 3.0
   max_price: 120.0
   max_atr_pct: 9.0
   min_confluence: 3
-  # Qualitätsfilter
   min_score_long: 44
   min_score_short: 44
   prefer_mid_cap_under: 80
-  # Gap-Filter: Overnight-Gap > X% → strenger
   max_gap_pct_soft: 3.0
   max_gap_pct_hard: 6.0
 
@@ -215,5 +208,4 @@ scalable:
   allow_trade_execution: true
   require_confirm_checkbox: true
   default_order_type: market
-  # Cash-Puffer: nie mehr als 90% des verfügbaren Cash als Notional
   cash_buffer_pct: 0.90
