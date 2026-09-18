@@ -8,10 +8,12 @@ Voraussetzungen auf dem Mac:
   sc login
 
 Alle Schreibaktionen (Trade Phase-2) sind standardmäßig deaktiviert.
+Die App bereitet nur Phase-1-Previews vor und zeigt den Confirm-Befehl.
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -114,6 +116,118 @@ def overnight() -> ScalableResult:
     return _run(["overnight", "--json"])
 
 
+def resolve_isin(symbol: str, isin_map: dict[str, str] | None = None) -> str | None:
+    """Ticker → ISIN. Zuerst config-Map, sonst sc search."""
+    sym = symbol.strip().upper()
+    if not sym:
+        return None
+    # Schon eine ISIN?
+    if re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}\d", sym):
+        return sym
+    mapping = {k.upper(): v.upper() for k, v in (isin_map or {}).items()}
+    if sym in mapping:
+        return mapping[sym]
+    # Yahoo-DE-Ticker: SAP.DE → SAP
+    base = sym.split(".")[0]
+    if base in mapping:
+        return mapping[base]
+
+    r = search(base if "." in sym else sym)
+    if not r.ok or r.data is None:
+        return None
+    items: list[dict] = []
+    if isinstance(r.data, list):
+        items = [x for x in r.data if isinstance(x, dict)]
+    elif isinstance(r.data, dict):
+        for key in ("results", "items", "securities", "data"):
+            if isinstance(r.data.get(key), list):
+                items = [x for x in r.data[key] if isinstance(x, dict)]
+                break
+    for it in items:
+        isin = (
+            it.get("isin")
+            or it.get("ISIN")
+            or it.get("instrumentIsin")
+            or ""
+        )
+        ticker = str(
+            it.get("ticker") or it.get("symbol") or it.get("name") or ""
+        ).upper()
+        if isin and (base in ticker or sym in ticker or ticker in (base, sym)):
+            return str(isin).upper()
+    if items:
+        isin = items[0].get("isin") or items[0].get("ISIN")
+        if isin:
+            return str(isin).upper()
+    return None
+
+
+def extract_confirmation_id(data: Any) -> str | None:
+    """confirmation_id aus Preview-JSON ziehen."""
+    if data is None:
+        return None
+    if isinstance(data, dict):
+        for key in (
+            "confirmation_id",
+            "confirmationId",
+            "confirm_id",
+            "confirmId",
+            "id",
+        ):
+            val = data.get(key)
+            if val and isinstance(val, (str, int)):
+                return str(val)
+        # verschachtelt
+        for v in data.values():
+            found = extract_confirmation_id(v)
+            if found:
+                return found
+    if isinstance(data, list):
+        for item in data:
+            found = extract_confirmation_id(item)
+            if found:
+                return found
+    if isinstance(data, str):
+        m = re.search(
+            r"(?:confirmation[_-]?id|confirm)[\"'\s:=]+([A-Za-z0-9_-]+)",
+            data,
+            re.I,
+        )
+        if m:
+            return m.group(1)
+    return None
+
+
+def build_confirm_command(
+    side: str,
+    isin: str,
+    confirmation_id: str,
+    *,
+    amount: float | None = None,
+    shares: float | None = None,
+    order_type: str = "market",
+) -> str:
+    """Exakter Terminal-Befehl für Phase 2 (nur zum Kopieren)."""
+    parts = [
+        "sc",
+        "broker",
+        "trade",
+        side.lower().strip(),
+        "--isin",
+        isin.upper(),
+        "--order-type",
+        order_type,
+    ]
+    if amount is not None:
+        parts.extend(["--amount", str(amount)])
+    elif shares is not None:
+        # Buy-side: ganze Shares
+        shares_int = int(shares) if float(shares).is_integer() else shares
+        parts.extend(["--shares", str(shares_int)])
+    parts.extend(["--confirm", str(confirmation_id)])
+    return " ".join(parts)
+
+
 def trade_preview(
     side: str,
     isin: str,
@@ -141,13 +255,71 @@ def trade_preview(
     if amount is not None:
         args.extend(["--amount", str(amount)])
     elif shares is not None:
-        args.extend(["--shares", str(shares)])
+        # CLI akzeptiert buy-side ganze Shares
+        sh = int(shares) if float(shares).is_integer() else shares
+        args.extend(["--shares", str(sh)])
     else:
         return ScalableResult(
             ok=False, data=None, raw="", error="amount oder shares erforderlich"
         )
 
     return _run(args, timeout=60)
+
+
+def prepare_order_from_idea(
+    *,
+    symbol: str,
+    side: str,
+    shares: float,
+    isin_map: dict[str, str] | None = None,
+    order_type: str = "market",
+    amount: float | None = None,
+) -> tuple[ScalableResult, str | None, str | None]:
+    """Idee → ISIN auflösen → Phase-1-Preview → Confirm-Befehl.
+
+    Returns: (result, isin, confirm_command)
+    """
+    isin = resolve_isin(symbol, isin_map)
+    if not isin:
+        return (
+            ScalableResult(
+                ok=False,
+                data=None,
+                raw="",
+                error=f"Keine ISIN für {symbol}. In config.yaml unter isin_map ergänzen oder manuell suchen.",
+            ),
+            None,
+            None,
+        )
+
+    trade_side = "buy" if side.upper() in {"LONG", "BUY", "KAUF"} else "sell"
+    if side.upper() in {"SHORT", "SELL", "VERKAUF"}:
+        trade_side = "sell"
+
+    kwargs: dict[str, Any] = {"order_type": order_type}
+    if amount is not None and amount > 0:
+        kwargs["amount"] = amount
+    else:
+        # ganze Stück für buy
+        sh = max(1, int(round(shares)))
+        kwargs["shares"] = sh
+
+    result = trade_preview(trade_side, isin, **kwargs)
+    if not result.ok:
+        return result, isin, None
+
+    cid = extract_confirmation_id(result.data) or extract_confirmation_id(result.raw)
+    cmd = None
+    if cid:
+        cmd = build_confirm_command(
+            trade_side,
+            isin,
+            cid,
+            amount=kwargs.get("amount"),
+            shares=kwargs.get("shares"),
+            order_type=order_type,
+        )
+    return result, isin, cmd
 
 
 def trade_confirm(

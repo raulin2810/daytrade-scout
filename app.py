@@ -17,6 +17,9 @@ from src import scalable as sc
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
+ISIN_MAP: dict[str, str] = {
+    str(k).upper(): str(v).upper() for k, v in (CONFIG.get("isin_map") or {}).items()
+}
 
 
 st.set_page_config(page_title="Daytrade Scout", page_icon="📈", layout="wide")
@@ -89,16 +92,125 @@ def _json_table(data: object) -> pd.DataFrame | None:
             return pd.DataFrame(data)
         return pd.DataFrame({"value": data})
     if isinstance(data, dict):
-        # Häufige Scalable-Shapes
         for key in ("holdings", "items", "transactions", "results", "positions"):
             if key in data and isinstance(data[key], list):
                 return pd.DataFrame(data[key])
-        # flaches Dict → eine Zeile
         try:
             return pd.DataFrame([data])
         except Exception:
             return None
     return None
+
+
+def _show_prepared_order(key: str) -> None:
+    prep = st.session_state.get(key)
+    if not prep:
+        return
+    result: sc.ScalableResult = prep["result"]
+    isin = prep.get("isin")
+    cmd = prep.get("cmd")
+    symbol = prep.get("symbol", "")
+
+    if not result.ok:
+        st.error(result.error or "Preview fehlgeschlagen")
+        if result.raw:
+            with st.expander("Rohausgabe"):
+                st.code(result.raw)
+        return
+
+    st.success(f"Order vorbereitet für {symbol}" + (f" ({isin})" if isin else ""))
+    st.caption("Phase 1 erledigt – noch keine Ausführung. Prüfe Kosten/Warnungen unten.")
+
+    if cmd:
+        st.markdown("**Zum Bestätigen im Terminal kopieren und ausführen:**")
+        st.code(cmd, language="bash")
+        st.warning(
+            "Nur ausführen, wenn du die Order wirklich platzieren willst. "
+            "Die confirmation_id ist zeitlich begrenzt."
+        )
+    else:
+        st.warning(
+            "Preview OK, aber keine confirmation_id gefunden. "
+            "JSON prüfen und manuell mit --confirm fortsetzen."
+        )
+
+    table = _json_table(result.data)
+    if table is not None and not table.empty:
+        st.dataframe(table, use_container_width=True, hide_index=True)
+    else:
+        st.json(result.data if result.data is not None else result.raw)
+
+
+def render_order_prepare_block(idea: Idea) -> None:
+    """Aus Scan-Idee: Scalable-Order vorbereiten (nur Preview)."""
+    st.markdown("---")
+    st.markdown("**Scalable: Order vorbereiten**")
+    if not sc.sc_available():
+        st.caption("`sc` nicht installiert – siehe Tab Scalable.")
+        return
+
+    isin_hint = sc.resolve_isin(idea.symbol, ISIN_MAP)
+    if isin_hint:
+        st.caption(f"ISIN: `{isin_hint}`")
+    else:
+        st.caption("ISIN unbekannt – wird per `sc search` versucht oder in config.yaml ergänzen.")
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        size_mode = st.selectbox(
+            "Größe",
+            ["shares", "amount"],
+            key=f"sz_{idea.symbol}",
+            help="shares = Stückzahl aus Idee; amount = Euro-Betrag",
+        )
+    with c2:
+        default_shares = max(1, int(round(idea.shares))) if idea.shares else 1
+        default_amount = float(round(idea.position_value, 0)) if idea.position_value else 100.0
+        if size_mode == "shares":
+            size_val = st.number_input(
+                "Stück",
+                min_value=1.0,
+                value=float(default_shares),
+                step=1.0,
+                key=f"sv_{idea.symbol}",
+            )
+        else:
+            size_val = st.number_input(
+                "Betrag €",
+                min_value=1.0,
+                value=default_amount,
+                step=10.0,
+                key=f"sv_{idea.symbol}",
+            )
+    with c3:
+        order_type = st.selectbox(
+            "Order-Typ",
+            ["market", "limit", "stop"],
+            key=f"ot_{idea.symbol}",
+        )
+
+    btn_key = f"prep_{idea.symbol}"
+    if st.button("Order vorbereiten (Preview)", type="primary", key=btn_key):
+        with st.spinner(f"Scalable Preview für {idea.symbol} …"):
+            amount = size_val if size_mode == "amount" else None
+            shares = size_val if size_mode == "shares" else float(default_shares)
+            result, isin, cmd = sc.prepare_order_from_idea(
+                symbol=idea.symbol,
+                side=idea.side,
+                shares=shares,
+                amount=amount,
+                isin_map=ISIN_MAP,
+                order_type=order_type,
+            )
+            st.session_state[f"prep_result_{idea.symbol}"] = {
+                "result": result,
+                "isin": isin,
+                "cmd": cmd,
+                "symbol": idea.symbol,
+                "side": idea.side,
+            }
+
+    _show_prepared_order(f"prep_result_{idea.symbol}")
 
 
 def render_scalable_tab() -> None:
@@ -125,26 +237,21 @@ def render_scalable_tab() -> None:
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         if st.button("Whoami", use_container_width=True):
-            r = sc.whoami()
-            st.session_state["sc_last"] = r
+            st.session_state["sc_last"] = sc.whoami()
     with col_b:
         if st.button("Overview", use_container_width=True):
-            r = sc.overview()
-            st.session_state["sc_last"] = r
+            st.session_state["sc_last"] = sc.overview()
     with col_c:
         if st.button("Holdings", use_container_width=True):
-            r = sc.holdings()
-            st.session_state["sc_last"] = r
+            st.session_state["sc_last"] = sc.holdings()
 
     c1, c2 = st.columns(2)
     with c1:
         if st.button("Transactions", use_container_width=True):
-            r = sc.transactions()
-            st.session_state["sc_last"] = r
+            st.session_state["sc_last"] = sc.transactions()
     with c2:
         if st.button("Overnight", use_container_width=True):
-            r = sc.overnight()
-            st.session_state["sc_last"] = r
+            st.session_state["sc_last"] = sc.overnight()
 
     st.divider()
     st.markdown("**Quote / Suche**")
@@ -160,26 +267,37 @@ def render_scalable_tab() -> None:
         st.session_state["sc_last"] = sc.search(search_q)
 
     st.divider()
-    st.markdown("**Trade-Preview (Phase 1 – keine Ausführung)**")
+    st.markdown("**Trade-Preview manuell (Phase 1)**")
     st.info(
-        "Phase 2 (echter Order) ist in der App deaktiviert. "
-        "Nach dem Preview: im Terminal denselben Befehl mit `--confirm <ID>` ausführen."
+        "Oder direkt aus dem Scan-Tab bei einer Idee: **Order vorbereiten**. "
+        "Phase 2 immer selbst im Terminal bestätigen."
     )
     t1, t2, t3, t4 = st.columns(4)
     with t1:
-        side = st.selectbox("Seite", ["buy", "sell"])
+        side = st.selectbox("Seite", ["buy", "sell"], key="man_side")
     with t2:
         trade_isin = st.text_input("ISIN", key="trade_isin", placeholder="US0378331005")
     with t3:
-        size_mode = st.selectbox("Größe", ["amount", "shares"])
+        size_mode = st.selectbox("Größe", ["amount", "shares"], key="man_size")
     with t4:
-        size_val = st.number_input("Wert", min_value=1.0, value=100.0, step=1.0)
+        size_val = st.number_input("Wert", min_value=1.0, value=100.0, step=1.0, key="man_val")
 
-    if st.button("Preview erzeugen", type="primary"):
+    if st.button("Preview erzeugen", type="primary", key="man_preview"):
         kwargs = {"amount": size_val} if size_mode == "amount" else {"shares": size_val}
-        st.session_state["sc_last"] = sc.trade_preview(side, trade_isin, **kwargs)
+        result = sc.trade_preview(side, trade_isin, **kwargs)
+        cid = sc.extract_confirmation_id(result.data) if result.ok else None
+        cmd = None
+        if result.ok and cid:
+            cmd = sc.build_confirm_command(
+                side,
+                trade_isin,
+                cid,
+                amount=kwargs.get("amount"),
+                shares=kwargs.get("shares"),
+            )
+        st.session_state["sc_last"] = result
+        st.session_state["sc_confirm_cmd"] = cmd
 
-    # Ergebnis anzeigen
     last: sc.ScalableResult | None = st.session_state.get("sc_last")
     if last is None:
         st.caption("Noch kein Abruf – Buttons oben nutzen.")
@@ -193,6 +311,11 @@ def render_scalable_tab() -> None:
         return
 
     st.success("OK")
+    cmd = st.session_state.get("sc_confirm_cmd")
+    if cmd:
+        st.markdown("**Zum Bestätigen im Terminal:**")
+        st.code(cmd, language="bash")
+
     table = _json_table(last.data)
     if table is not None and not table.empty:
         st.dataframe(table, use_container_width=True, hide_index=True)
@@ -212,7 +335,9 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.title("Daytrade Scout")
-    st.caption("Multi-Timeframe · VWAP/Opening-Range · Marktregime · Journal · Scalable CLI")
+    st.caption(
+        "Multi-Timeframe · VWAP/Opening-Range · Marktregime · Journal · Scalable Order-Preview"
+    )
     st.markdown(
         f"""
         <div class="disclaimer">
@@ -270,9 +395,11 @@ def main() -> None:
             Note **A** = mindestens 5 Confluence-Punkte, kein Earnings-Fenster, VIX nicht extrem.
             Unter 3 Punkten gibt es keine Idee.
 
-            ### Scalable
-            Der Tab **Scalable** nutzt die offizielle CLI (`sc`). Portfolio und Kurse live.
-            Orders nur als Preview – Ausführung bewusst manuell.
+            ### Scalable Order-Flow
+            1. Scan → Idee öffnen → **Order vorbereiten (Preview)**
+            2. App holt Phase-1 bei Scalable (Kosten, Warnungen, confirmation_id)
+            3. Du kopierst den angezeigten `sc … --confirm <ID>` Befehl ins Terminal
+            4. Erst dann wird die Order wirklich platziert
             """
         )
 
@@ -374,22 +501,27 @@ def main() -> None:
                         for h in idea.headlines:
                             st.write(f"- {h}")
                     st.plotly_chart(idea_chart(idea), use_container_width=True)
-                    if st.button(f"In Journal legen · {idea.symbol}", key=f"j_{idea.symbol}"):
-                        add_row(
-                            {
-                                "ticker": idea.symbol,
-                                "seite": idea.side,
-                                "setup": idea.setup,
-                                "grade": idea.grade,
-                                "einstieg": round(idea.entry, 2),
-                                "stop": round(idea.stop, 2),
-                                "ziel1": round(idea.target1, 2),
-                                "stueck": idea.shares,
-                                "status": "plan",
-                                "notiz": idea.setup,
-                            }
-                        )
-                        st.success("Gespeichert unter Journal.")
+
+                    bj1, bj2 = st.columns(2)
+                    with bj1:
+                        if st.button(f"In Journal legen · {idea.symbol}", key=f"j_{idea.symbol}"):
+                            add_row(
+                                {
+                                    "ticker": idea.symbol,
+                                    "seite": idea.side,
+                                    "setup": idea.setup,
+                                    "grade": idea.grade,
+                                    "einstieg": round(idea.entry, 2),
+                                    "stop": round(idea.stop, 2),
+                                    "ziel1": round(idea.target1, 2),
+                                    "stueck": idea.shares,
+                                    "status": "plan",
+                                    "notiz": idea.setup,
+                                }
+                            )
+                            st.success("Gespeichert unter Journal.")
+
+                    render_order_prepare_block(idea)
 
         if rest:
             with st.expander("Rest der Watchlist"):
