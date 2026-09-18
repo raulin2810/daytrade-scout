@@ -84,3 +84,11 @@ risk:
 
 news:
   max_headlines_per_symbol: 7
+
+# Scalable CLI (optional)
+# Install: brew install scalable-cli  (nach brew tap ScalableCapital/tap)
+# Login:   sc login   (Agentic Investing im Web aktivieren)
+scalable:
+  enabled: true
+  # Trade Phase-2 (echte Orders) in der App immer aus – nur Preview
+  allow_trade_execution: false

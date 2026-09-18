@@ -25,6 +25,7 @@ Repo: https://github.com/raulin2810/daytrade-scout
 - Optionale DE-Watchlist
 - Paper-Journal + CSV-Export
 - Chart mit Entry/Stop/VWAP/OR
+- **Scalable CLI**: Portfolio, Holdings, Quotes, Trade-Preview (Phase 1)
 
 ## Start auf dem Mac
 
@@ -51,6 +52,38 @@ xattr -d com.apple.quarantine start.command start.sh
 
 Python 3 wird gebraucht. Erster Start installiert die Pakete.
 
+## Scalable Broker anbinden (optional)
+
+1. CLI installieren:
+
+```bash
+brew tap ScalableCapital/tap
+brew trust --formula ScalableCapital/tap/scalable-cli
+brew install scalable-cli
+```
+
+2. Im **Browser** (Scalable Web): Profil → Security → **Agentic Investing** aktivieren.
+
+3. Einloggen:
+
+```bash
+sc login
+sc whoami
+```
+
+4. App starten → Tab **Scalable**.
+
+Dort kannst du Overview, Holdings, Transactions, Overnight, Quote und Suche abrufen.
+**Trade-Preview (Phase 1)** erzeugt nur die Bestätigungs-ID – echte Orders (Phase 2)
+bleiben absichtlich deaktiviert. Ausführung manuell im Terminal:
+
+```bash
+sc broker trade buy --isin US0378331005 --amount 100 --order-type market --confirm <ID>
+```
+
+Fork der CLI (falls du sie lokal anpassen willst):
+https://github.com/raulin2810/scalable-cli
+
 ## Nutzung
 
 1. Kapital und Risiko einstellen (Standard 0,5 %).
@@ -58,6 +91,7 @@ Python 3 wird gebraucht. Erster Start installiert die Pakete.
 3. **Scan starten**.
 4. Nur A/B ansehen, Playbook lesen, Invalidierung setzen.
 5. Idee ins Journal legen, wenn du sie wirklich handelst (Paper zählt).
+6. Optional: Tab **Scalable** für dein echtes Broker-Konto.
 
 Am Wochenende ist der Scan ein **Plan für die nächste US-Session**,
 kein Live-Daytrade.
@@ -66,3 +100,4 @@ kein Live-Daytrade.
 
 Yahoo-Daten können verzögert sein. Stops schützen nicht vor Gaps.
 Daytrading kann das Kapital vernichten. Siehe [DISCLAIMER.md](DISCLAIMER.md).
+Scalable-Orders erfordern immer deine explizite Bestätigung (Two-Step).

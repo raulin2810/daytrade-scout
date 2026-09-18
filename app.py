@@ -12,6 +12,7 @@ import yaml
 from src.journal import add_row, load as load_journal
 from src.scan import run_scan
 from src.signals import Idea
+from src import scalable as sc
 
 
 ROOT = Path(__file__).resolve().parent
@@ -78,6 +79,127 @@ def idea_chart(idea: Idea) -> go.Figure:
     return fig
 
 
+def _json_table(data: object) -> pd.DataFrame | None:
+    if data is None:
+        return None
+    if isinstance(data, list):
+        if not data:
+            return pd.DataFrame()
+        if isinstance(data[0], dict):
+            return pd.DataFrame(data)
+        return pd.DataFrame({"value": data})
+    if isinstance(data, dict):
+        # Häufige Scalable-Shapes
+        for key in ("holdings", "items", "transactions", "results", "positions"):
+            if key in data and isinstance(data[key], list):
+                return pd.DataFrame(data[key])
+        # flaches Dict → eine Zeile
+        try:
+            return pd.DataFrame([data])
+        except Exception:
+            return None
+    return None
+
+
+def render_scalable_tab() -> None:
+    st.subheader("Scalable Broker (CLI)")
+    st.caption(
+        "Liest Portfolio & Kurse über die offizielle `sc`-CLI. "
+        "Trades: nur Preview (Phase 1). Ausführung bleibt manuell im Terminal."
+    )
+
+    if not sc.sc_available():
+        st.error(
+            "`sc` ist nicht installiert oder nicht im PATH.\n\n"
+            "Auf dem Mac:\n"
+            "```\n"
+            "brew tap ScalableCapital/tap\n"
+            "brew trust --formula ScalableCapital/tap/scalable-cli\n"
+            "brew install scalable-cli\n"
+            "sc login\n"
+            "```\n"
+            "Agentic Investing im Scalable-Web unter Profil → Security aktivieren."
+        )
+        return
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        if st.button("Whoami", use_container_width=True):
+            r = sc.whoami()
+            st.session_state["sc_last"] = r
+    with col_b:
+        if st.button("Overview", use_container_width=True):
+            r = sc.overview()
+            st.session_state["sc_last"] = r
+    with col_c:
+        if st.button("Holdings", use_container_width=True):
+            r = sc.holdings()
+            st.session_state["sc_last"] = r
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Transactions", use_container_width=True):
+            r = sc.transactions()
+            st.session_state["sc_last"] = r
+    with c2:
+        if st.button("Overnight", use_container_width=True):
+            r = sc.overnight()
+            st.session_state["sc_last"] = r
+
+    st.divider()
+    st.markdown("**Quote / Suche**")
+    qcol1, qcol2 = st.columns([2, 1])
+    with qcol1:
+        isin_in = st.text_input("ISIN für Quote", placeholder="US0378331005")
+    with qcol2:
+        if st.button("Quote laden", use_container_width=True) and isin_in.strip():
+            st.session_state["sc_last"] = sc.quote(isin_in)
+
+    search_q = st.text_input("Suche (Name/Ticker)", placeholder="apple")
+    if st.button("Suchen") and search_q.strip():
+        st.session_state["sc_last"] = sc.search(search_q)
+
+    st.divider()
+    st.markdown("**Trade-Preview (Phase 1 – keine Ausführung)**")
+    st.info(
+        "Phase 2 (echter Order) ist in der App deaktiviert. "
+        "Nach dem Preview: im Terminal denselben Befehl mit `--confirm <ID>` ausführen."
+    )
+    t1, t2, t3, t4 = st.columns(4)
+    with t1:
+        side = st.selectbox("Seite", ["buy", "sell"])
+    with t2:
+        trade_isin = st.text_input("ISIN", key="trade_isin", placeholder="US0378331005")
+    with t3:
+        size_mode = st.selectbox("Größe", ["amount", "shares"])
+    with t4:
+        size_val = st.number_input("Wert", min_value=1.0, value=100.0, step=1.0)
+
+    if st.button("Preview erzeugen", type="primary"):
+        kwargs = {"amount": size_val} if size_mode == "amount" else {"shares": size_val}
+        st.session_state["sc_last"] = sc.trade_preview(side, trade_isin, **kwargs)
+
+    # Ergebnis anzeigen
+    last: sc.ScalableResult | None = st.session_state.get("sc_last")
+    if last is None:
+        st.caption("Noch kein Abruf – Buttons oben nutzen.")
+        return
+
+    if not last.ok:
+        st.error(last.error or "Unbekannter Fehler")
+        if last.raw:
+            with st.expander("Rohausgabe"):
+                st.code(last.raw)
+        return
+
+    st.success("OK")
+    table = _json_table(last.data)
+    if table is not None and not table.empty:
+        st.dataframe(table, use_container_width=True, hide_index=True)
+    else:
+        st.json(last.data if last.data is not None else last.raw)
+
+
 def main() -> None:
     st.markdown(
         """
@@ -90,7 +212,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     st.title("Daytrade Scout")
-    st.caption("Multi-Timeframe · VWAP/Opening-Range · Marktregime · Journal · keine Orders")
+    st.caption("Multi-Timeframe · VWAP/Opening-Range · Marktregime · Journal · Scalable CLI")
     st.markdown(
         f"""
         <div class="disclaimer">
@@ -116,6 +238,13 @@ def main() -> None:
         run = st.button("Scan starten", type="primary", use_container_width=True)
         st.caption("Erster Scan dauert 20–60 Sekunden (Batch-Kurse + News).")
 
+        st.divider()
+        st.caption("Scalable CLI")
+        if sc.sc_available():
+            st.success("`sc` gefunden")
+        else:
+            st.warning("`sc` fehlt – siehe Tab Scalable")
+
     symbols = list(CONFIG["universe"])
     if use_de:
         symbols.extend(CONFIG.get("de_universe", []))
@@ -123,9 +252,9 @@ def main() -> None:
         symbols.extend([s.strip().upper() for s in extra.split(",") if s.strip()])
     symbols = list(dict.fromkeys(symbols))
 
-    tabs = st.tabs(["Scan", "Journal", "Methode"])
+    tabs = st.tabs(["Scan", "Journal", "Scalable", "Methode"])
 
-    with tabs[2]:
+    with tabs[3]:
         st.markdown(
             """
             ### Wie die Bewertung jetzt läuft
@@ -140,8 +269,15 @@ def main() -> None:
 
             Note **A** = mindestens 5 Confluence-Punkte, kein Earnings-Fenster, VIX nicht extrem.
             Unter 3 Punkten gibt es keine Idee.
+
+            ### Scalable
+            Der Tab **Scalable** nutzt die offizielle CLI (`sc`). Portfolio und Kurse live.
+            Orders nur als Preview – Ausführung bewusst manuell.
             """
         )
+
+    with tabs[2]:
+        render_scalable_tab()
 
     with tabs[1]:
         st.subheader("Paper-Journal")
