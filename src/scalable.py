@@ -1,14 +1,7 @@
 """Wrapper um die offizielle Scalable CLI (`sc`).
 
-Voraussetzungen auf dem Mac:
-  brew tap ScalableCapital/tap
-  brew trust --formula ScalableCapital/tap/scalable-cli
-  brew install scalable-cli
-  # Im Browser: Profil → Security → Agentic Investing aktivieren
-  sc login
-
-Alle Schreibaktionen (Trade Phase-2) sind standardmäßig deaktiviert.
-Die App bereitet nur Phase-1-Previews vor und zeigt den Confirm-Befehl.
+Phase 1 = Preview (automatisch aus Idee möglich).
+Phase 2 = Confirm nur nach explizitem User-Klick (oder Terminal).
 """
 from __future__ import annotations
 
@@ -18,10 +11,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Any
-
-
-class ScalableError(Exception):
-    """Fehler bei Aufruf oder Parsing der Scalable CLI."""
 
 
 @dataclass
@@ -48,10 +37,9 @@ def _run(args: list[str], timeout: int = 45) -> ScalableResult:
                 "Dann: sc login"
             ),
         )
-    cmd = ["sc", *args]
     try:
         proc = subprocess.run(
-            cmd,
+            ["sc", *args],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -80,10 +68,6 @@ def _run(args: list[str], timeout: int = 45) -> ScalableResult:
 
 def whoami() -> ScalableResult:
     return _run(["whoami", "--json"])
-
-
-def capabilities() -> ScalableResult:
-    return _run(["capabilities", "--json"])
 
 
 def overview() -> ScalableResult:
@@ -116,18 +100,68 @@ def overnight() -> ScalableResult:
     return _run(["overnight", "--json"])
 
 
+def extract_cash(data: Any) -> float | None:
+    """Versucht verfügbares Cash / Buying Power aus Overview-JSON zu lesen."""
+    if data is None:
+        return None
+    keys = (
+        "buyingPower",
+        "buying_power",
+        "availableCash",
+        "available_cash",
+        "cash",
+        "cashBalance",
+        "cash_balance",
+        "withdrawableCash",
+        "freeCash",
+        "liquidity",
+        "availableForTrading",
+    )
+
+    def walk(obj: Any) -> float | None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                kl = str(k).lower().replace("-", "_")
+                for want in keys:
+                    if kl == want.lower() or want.lower() in kl:
+                        try:
+                            if isinstance(v, dict) and "amount" in v:
+                                return float(v["amount"])
+                            if isinstance(v, dict) and "value" in v:
+                                return float(v["value"])
+                            return float(v)
+                        except (TypeError, ValueError):
+                            pass
+                found = walk(v)
+                if found is not None:
+                    return found
+        if isinstance(obj, list):
+            for item in obj:
+                found = walk(item)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(data)
+
+
+def get_available_cash() -> tuple[float | None, ScalableResult]:
+    r = overview()
+    if not r.ok:
+        return None, r
+    cash = extract_cash(r.data)
+    return cash, r
+
+
 def resolve_isin(symbol: str, isin_map: dict[str, str] | None = None) -> str | None:
-    """Ticker → ISIN. Zuerst config-Map, sonst sc search."""
     sym = symbol.strip().upper()
     if not sym:
         return None
-    # Schon eine ISIN?
     if re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}\d", sym):
         return sym
     mapping = {k.upper(): v.upper() for k, v in (isin_map or {}).items()}
     if sym in mapping:
         return mapping[sym]
-    # Yahoo-DE-Ticker: SAP.DE → SAP
     base = sym.split(".")[0]
     if base in mapping:
         return mapping[base]
@@ -144,15 +178,8 @@ def resolve_isin(symbol: str, isin_map: dict[str, str] | None = None) -> str | N
                 items = [x for x in r.data[key] if isinstance(x, dict)]
                 break
     for it in items:
-        isin = (
-            it.get("isin")
-            or it.get("ISIN")
-            or it.get("instrumentIsin")
-            or ""
-        )
-        ticker = str(
-            it.get("ticker") or it.get("symbol") or it.get("name") or ""
-        ).upper()
+        isin = it.get("isin") or it.get("ISIN") or it.get("instrumentIsin") or ""
+        ticker = str(it.get("ticker") or it.get("symbol") or it.get("name") or "").upper()
         if isin and (base in ticker or sym in ticker or ticker in (base, sym)):
             return str(isin).upper()
     if items:
@@ -163,21 +190,15 @@ def resolve_isin(symbol: str, isin_map: dict[str, str] | None = None) -> str | N
 
 
 def extract_confirmation_id(data: Any) -> str | None:
-    """confirmation_id aus Preview-JSON ziehen."""
     if data is None:
         return None
     if isinstance(data, dict):
-        for key in (
-            "confirmation_id",
-            "confirmationId",
-            "confirm_id",
-            "confirmId",
-            "id",
-        ):
+        for key in ("confirmation_id", "confirmationId", "confirm_id", "confirmId", "id"):
             val = data.get(key)
             if val and isinstance(val, (str, int)):
-                return str(val)
-        # verschachtelt
+                s = str(val)
+                if len(s) >= 6:
+                    return s
         for v in data.values():
             found = extract_confirmation_id(v)
             if found:
@@ -189,7 +210,7 @@ def extract_confirmation_id(data: Any) -> str | None:
                 return found
     if isinstance(data, str):
         m = re.search(
-            r"(?:confirmation[_-]?id|confirm)[\"'\s:=]+([A-Za-z0-9_-]+)",
+            r"(?:confirmation[_-]?id|confirm)[\"'\s:=]+([A-Za-z0-9_-]{6,})",
             data,
             re.I,
         )
@@ -207,7 +228,6 @@ def build_confirm_command(
     shares: float | None = None,
     order_type: str = "market",
 ) -> str:
-    """Exakter Terminal-Befehl für Phase 2 (nur zum Kopieren)."""
     parts = [
         "sc",
         "broker",
@@ -221,7 +241,6 @@ def build_confirm_command(
     if amount is not None:
         parts.extend(["--amount", str(amount)])
     elif shares is not None:
-        # Buy-side: ganze Shares
         shares_int = int(shares) if float(shares).is_integer() else shares
         parts.extend(["--shares", str(shares_int)])
     parts.extend(["--confirm", str(confirmation_id)])
@@ -236,10 +255,6 @@ def trade_preview(
     shares: float | None = None,
     order_type: str = "market",
 ) -> ScalableResult:
-    """Phase 1: Order-Preview (keine Ausführung).
-
-    Gibt confirmation_id zurück. Phase 2 nur manuell mit --confirm.
-    """
     side = side.lower().strip()
     if side not in {"buy", "sell"}:
         return ScalableResult(ok=False, data=None, raw="", error="side muss buy oder sell sein")
@@ -249,21 +264,41 @@ def trade_preview(
 
     args = ["broker", "trade", side, "--isin", isin, "--order-type", order_type, "--json"]
     if amount is not None and shares is not None:
-        return ScalableResult(
-            ok=False, data=None, raw="", error="Nur amount ODER shares angeben"
-        )
+        return ScalableResult(ok=False, data=None, raw="", error="Nur amount ODER shares")
     if amount is not None:
         args.extend(["--amount", str(amount)])
     elif shares is not None:
-        # CLI akzeptiert buy-side ganze Shares
         sh = int(shares) if float(shares).is_integer() else shares
         args.extend(["--shares", str(sh)])
     else:
-        return ScalableResult(
-            ok=False, data=None, raw="", error="amount oder shares erforderlich"
-        )
-
+        return ScalableResult(ok=False, data=None, raw="", error="amount oder shares erforderlich")
     return _run(args, timeout=60)
+
+
+def cash_aware_size(
+    *,
+    price: float,
+    desired_shares: int,
+    desired_amount: float | None,
+    cash: float | None,
+    buffer_pct: float = 0.90,
+) -> tuple[int | None, float | None, str]:
+    """Begrenzt Stück/Betrag auf verfügbares Cash."""
+    if cash is None or cash <= 0:
+        return desired_shares, desired_amount, "kein Cash-Abruf – Idee-Größe unverändert"
+    usable = cash * buffer_pct
+    if desired_amount is not None and desired_amount > 0:
+        amt = min(desired_amount, usable)
+        if amt < 1:
+            return None, None, f"Cash zu niedrig ({cash:.0f})"
+        return None, round(amt, 2), f"Cash {cash:.0f} → Betrag {amt:.0f} (Puffer {buffer_pct:.0%})"
+    if price <= 0:
+        return desired_shares, None, ""
+    max_sh = int(usable // price)
+    sh = min(max(1, desired_shares), max_sh) if max_sh >= 1 else 0
+    if sh < 1:
+        return 0, None, f"Cash {cash:.0f} reicht nicht für 1 Share à {price:.2f}"
+    return sh, None, f"Cash {cash:.0f} → max {max_sh} Shares, gewählt {sh}"
 
 
 def prepare_order_from_idea(
@@ -274,11 +309,12 @@ def prepare_order_from_idea(
     isin_map: dict[str, str] | None = None,
     order_type: str = "market",
     amount: float | None = None,
-) -> tuple[ScalableResult, str | None, str | None]:
-    """Idee → ISIN auflösen → Phase-1-Preview → Confirm-Befehl.
-
-    Returns: (result, isin, confirm_command)
-    """
+    price: float | None = None,
+    use_cash_limit: bool = True,
+    cash_buffer_pct: float = 0.90,
+) -> tuple[ScalableResult, str | None, str | None, dict]:
+    """Idee → ISIN → optional Cash-Limit → Phase-1 → Confirm-Meta."""
+    meta: dict[str, Any] = {}
     isin = resolve_isin(symbol, isin_map)
     if not isin:
         return (
@@ -286,29 +322,64 @@ def prepare_order_from_idea(
                 ok=False,
                 data=None,
                 raw="",
-                error=f"Keine ISIN für {symbol}. In config.yaml unter isin_map ergänzen oder manuell suchen.",
+                error=f"Keine ISIN für {symbol}. In config.yaml isin_map ergänzen.",
             ),
             None,
             None,
+            meta,
         )
 
-    trade_side = "buy" if side.upper() in {"LONG", "BUY", "KAUF"} else "sell"
+    trade_side = "buy"
     if side.upper() in {"SHORT", "SELL", "VERKAUF"}:
         trade_side = "sell"
+    elif side.upper() in {"LONG", "BUY", "KAUF"}:
+        trade_side = "buy"
+
+    cash = None
+    if use_cash_limit and trade_side == "buy":
+        cash, _ = get_available_cash()
+        meta["cash"] = cash
+        sh, amt, note = cash_aware_size(
+            price=price or 0,
+            desired_shares=int(round(shares)),
+            desired_amount=amount,
+            cash=cash,
+            buffer_pct=cash_buffer_pct,
+        )
+        meta["cash_note"] = note
+        if amount is not None:
+            amount = amt
+            shares = 0
+        else:
+            if sh is None or sh < 1:
+                return (
+                    ScalableResult(ok=False, data=None, raw="", error=note),
+                    isin,
+                    None,
+                    meta,
+                )
+            shares = sh
 
     kwargs: dict[str, Any] = {"order_type": order_type}
     if amount is not None and amount > 0:
         kwargs["amount"] = amount
+        meta["size_mode"] = "amount"
+        meta["size_value"] = amount
     else:
-        # ganze Stück für buy
         sh = max(1, int(round(shares)))
         kwargs["shares"] = sh
+        meta["size_mode"] = "shares"
+        meta["size_value"] = sh
+
+    meta["side"] = trade_side
+    meta["order_type"] = order_type
 
     result = trade_preview(trade_side, isin, **kwargs)
     if not result.ok:
-        return result, isin, None
+        return result, isin, None, meta
 
     cid = extract_confirmation_id(result.data) or extract_confirmation_id(result.raw)
+    meta["confirmation_id"] = cid
     cmd = None
     if cid:
         cmd = build_confirm_command(
@@ -319,7 +390,7 @@ def prepare_order_from_idea(
             shares=kwargs.get("shares"),
             order_type=order_type,
         )
-    return result, isin, cmd
+    return result, isin, cmd, meta
 
 
 def trade_confirm(
@@ -332,20 +403,12 @@ def trade_confirm(
     order_type: str = "market",
     enabled: bool = False,
 ) -> ScalableResult:
-    """Phase 2: Order absenden – nur wenn enabled=True (explizit).
-
-    Standardmäßig blockiert, damit die App keine ungewollten Trades auslöst.
-    """
     if not enabled:
         return ScalableResult(
             ok=False,
             data=None,
             raw="",
-            error=(
-                "Trade-Ausführung ist in der App standardmäßig deaktiviert. "
-                "Nur Preview (Phase 1) erlaubt. Bestätigung manuell im Terminal: "
-                "sc broker trade ... --confirm <ID>"
-            ),
+            error="Phase 2 nur nach explizitem Bestätigen in der App.",
         )
     side = side.lower().strip()
     isin = isin.strip().upper()
@@ -370,8 +433,5 @@ def trade_confirm(
     elif shares is not None:
         args.extend(["--shares", str(shares)])
     else:
-        return ScalableResult(
-            ok=False, data=None, raw="", error="amount oder shares erforderlich"
-        )
-
+        return ScalableResult(ok=False, data=None, raw="", error="amount oder shares erforderlich")
     return _run(args, timeout=60)
