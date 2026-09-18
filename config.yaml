@@ -1,5 +1,4 @@
-# Daytrade Scout – optimiert für kleines Konto (~4k€) + Mid-Caps
-# Big Caps bleiben optional; Standard-Universum mischt liquide Mid/Smaller.
+# Daytrade Scout – ~4k EUR Cash, Long-only, hohe Auslastung
 
 universe:
   - SPY
@@ -87,11 +86,14 @@ benchmarks:
   vix: "^VIX"
 
 risk:
-  default_capital: 4000
+  default_capital: 3780
   default_risk_pct: 0.5
   max_ideas: 5
   max_open_heat_pct: 1.5
-  max_position_pct: 0.25
+  max_position_pct: 0.50
+  portfolio_deploy_pct: 0.97
+  size_mode: deploy_cash
+  order_currency: EUR
   atr_stop_mult: 1.25
   swing_buffer_atr: 0.15
   reward_risk_t1: 1.5
@@ -208,4 +210,5 @@ scalable:
   allow_trade_execution: true
   require_confirm_checkbox: true
   default_order_type: market
-  cash_buffer_pct: 0.90
+  cash_buffer_pct: 0.97
+  prefer_amount_eur: true
