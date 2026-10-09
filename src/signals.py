@@ -115,15 +115,18 @@ def analyze_symbol(
     confluence = 0
     score = 50.0
 
+    zock = bool(cfg.get("_zock", False))
     min_price = float(cfg.get("min_price", 3.0))
     max_price = float(cfg.get("max_price", 500.0))
     max_atr_pct = float(cfg.get("max_atr_pct", 9.0))
+    min_atr_pct = float(cfg.get("min_atr_pct", 0.0))
     atr_mult = float(cfg.get("atr_stop_mult", 1.25))
     rr1 = float(cfg.get("reward_risk_t1", 1.5))
     rr2 = float(cfg.get("reward_risk_t2", 2.5))
     min_conf = int(cfg.get("min_confluence", 3))
     gap_soft = float(cfg.get("max_gap_pct_soft", 3.0))
     gap_hard = float(cfg.get("max_gap_pct_hard", 6.0))
+    min_rvol = float(cfg.get("min_rvol", 0.0))
 
     price = float(snap.price)
     if price < min_price or price > max_price:
@@ -136,7 +139,13 @@ def analyze_symbol(
     atr_s = atr(daily)
     atr_v = float(atr_s.iloc[-1])
     atr_pct = atr_v / price * 100.0 if price else 0.0
-    if atr_pct > max_atr_pct:
+    if zock:
+        if atr_pct < min_atr_pct:
+            return _skip(symbol, snap, "Zock", f"ATR {atr_pct:.1f}% zu niedrig für Zock-Modus (min {min_atr_pct})")
+        if atr_pct > max_atr_pct:
+            warnings.append(f"ATR {atr_pct:.1f}% extrem – Zock")
+        score += min(25.0, atr_pct)
+    elif atr_pct > max_atr_pct:
         warnings.append(f"ATR {atr_pct:.1f}% sehr hoch")
         score -= 8
 
@@ -158,13 +167,15 @@ def analyze_symbol(
 
     or_h, or_l, or_day = opening_range(intra if intra is not None else pd.DataFrame())
     rvol = intra_rvol(intra if intra is not None else pd.DataFrame())
+    if zock and rvol < min_rvol:
+        return _skip(symbol, snap, "Zock", f"RVOL {rvol:.1f} < {min_rvol}")
     bias15 = intra_bias(intra if intra is not None else pd.DataFrame())
     vwap_s = session_vwap(intra) if intra is not None and not intra.empty else pd.Series(dtype=float)
     vwap_v = float(vwap_s.iloc[-1]) if len(vwap_s) else None
     sh, sl = swing_points(daily)
 
     rel_spy = 0.0
-    if spy_daily is not None and len(spy_daily) >= 5 and len(daily) >= 5:
+    if spy_daily is not None and len(daily) >= 5 and spy_daily is not None and len(spy_daily) >= 5:
         r_s = close.pct_change(5).iloc[-1]
         r_p = spy_daily["Close"].pct_change(5).iloc[-1]
         if pd.notna(r_s) and pd.notna(r_p):
@@ -181,7 +192,6 @@ def analyze_symbol(
     side = "SKIP"
     setup = "kein Setup"
 
-    # Long bias only (project long-only)
     bullish = 0
     if ema9 > ema21:
         bullish += 1
@@ -235,35 +245,21 @@ def analyze_symbol(
 
     if bullish >= min_conf and long_ok:
         side = "LONG"
-        setup = "Momentum/ORB long"
+        setup = "ZOCK Runner" if zock else "Momentum/ORB long"
         score = 50 + bullish * 5 + news_score * 10
+        if zock:
+            score += min(20.0, atr_pct * 0.5)
+            reasons.append(f"Zock-Vol ATR {atr_pct:.1f}%")
         if or_h and price >= or_h * 0.998:
-            setup = "ORB Break long"
+            setup = "ORB Break long" if not zock else "ZOCK ORB"
             reasons.append("nahe/über Opening Range High")
             confluence += 1
     else:
         return _skip(
-            symbol,
-            snap,
-            setup,
-            f"Confluence {confluence}/{min_conf} oder Bias",
-            rsi_v=rsi_v,
-            adx_v=adx_v,
-            atr_v=atr_v,
-            atr_pct=atr_pct,
-            vol_ratio=vol_ratio,
-            gap_pct=gap_pct,
-            rvol=rvol,
-            vwap_v=vwap_v,
-            or_h=or_h,
-            or_l=or_l,
-            sh=sh,
-            sl=sl,
-            rel_spy=rel_spy,
-            news_score=news_score,
-            headlines=headlines,
-            reasons=reasons,
-            warnings=warnings,
+            symbol, snap, setup, f"Confluence {confluence}/{min_conf} oder Bias",
+            rsi_v=rsi_v, adx_v=adx_v, atr_v=atr_v, atr_pct=atr_pct, vol_ratio=vol_ratio,
+            gap_pct=gap_pct, rvol=rvol, vwap_v=vwap_v, or_h=or_h, or_l=or_l, sh=sh, sl=sl,
+            rel_spy=rel_spy, news_score=news_score, headlines=headlines, reasons=reasons, warnings=warnings,
         )
 
     entry = price
@@ -295,75 +291,33 @@ def analyze_symbol(
     invalidation = f"Schluss unter {stop:.2f} oder OR-Low" if or_l else f"Schluss unter {stop:.2f}"
 
     return {
-        "side": side,
-        "setup": setup,
-        "grade": grade,
-        "score": float(score),
-        "confluence": int(confluence),
-        "entry": float(entry),
-        "stop": float(stop),
-        "target1": float(t1),
-        "target2": float(t2),
-        "invalidation": invalidation,
-        "playbook": playbook,
-        "atr": float(atr_v),
-        "atr_pct": float(atr_pct),
-        "rsi": float(rsi_v),
-        "adx": float(adx_v),
-        "volume_ratio": float(vol_ratio),
-        "reasons": reasons,
-        "warnings": warnings,
-        "vwap": vwap_v,
-        "or_high": or_h,
-        "or_low": or_l,
-        "or_day": or_day,
-        "swing_high": sh,
-        "swing_low": sl,
-        "rel_spy": float(rel_spy),
-        "rel_iwm": float(rel_iwm),
-        "quality": float(quality),
-        "gap_pct": float(gap_pct),
-        "rvol": float(rvol),
-        "bias_15": bias15,
+        "side": side, "setup": setup, "grade": grade, "score": float(score),
+        "confluence": int(confluence), "entry": float(entry), "stop": float(stop),
+        "target1": float(t1), "target2": float(t2), "invalidation": invalidation,
+        "playbook": playbook, "atr": float(atr_v), "atr_pct": float(atr_pct),
+        "rsi": float(rsi_v), "adx": float(adx_v), "volume_ratio": float(vol_ratio),
+        "reasons": reasons, "warnings": warnings, "vwap": vwap_v,
+        "or_high": or_h, "or_low": or_l, "or_day": or_day,
+        "swing_high": sh, "swing_low": sl, "rel_spy": float(rel_spy),
+        "rel_iwm": float(rel_iwm), "quality": float(quality),
+        "gap_pct": float(gap_pct), "rvol": float(rvol), "bias_15": bias15,
     }
 
 
-def _skip(
-    symbol: str,
-    snap: Snapshot,
-    setup: str,
-    reason: str,
-    **kw,
-) -> dict:
+def _skip(symbol: str, snap: Snapshot, setup: str, reason: str, **kw) -> dict:
     return {
-        "side": "SKIP",
-        "setup": setup,
-        "grade": "F",
-        "score": 0.0,
-        "confluence": 0,
-        "entry": float(snap.price),
-        "stop": float(snap.price),
-        "target1": float(snap.price),
-        "target2": float(snap.price),
-        "invalidation": reason,
-        "playbook": reason,
-        "atr": float(kw.get("atr_v") or 0),
-        "atr_pct": float(kw.get("atr_pct") or 0),
-        "rsi": float(kw.get("rsi_v") or 50),
-        "adx": float(kw.get("adx_v") or 15),
+        "side": "SKIP", "setup": setup, "grade": "F", "score": 0.0, "confluence": 0,
+        "entry": float(snap.price), "stop": float(snap.price),
+        "target1": float(snap.price), "target2": float(snap.price),
+        "invalidation": reason, "playbook": reason,
+        "atr": float(kw.get("atr_v") or 0), "atr_pct": float(kw.get("atr_pct") or 0),
+        "rsi": float(kw.get("rsi_v") or 50), "adx": float(kw.get("adx_v") or 15),
         "volume_ratio": float(kw.get("vol_ratio") or 1),
         "reasons": list(kw.get("reasons") or [reason]),
         "warnings": list(kw.get("warnings") or []),
-        "vwap": kw.get("vwap_v"),
-        "or_high": kw.get("or_h"),
-        "or_low": kw.get("or_l"),
-        "or_day": None,
-        "swing_high": kw.get("sh"),
-        "swing_low": kw.get("sl"),
-        "rel_spy": float(kw.get("rel_spy") or 0),
-        "rel_iwm": 0.0,
-        "quality": 0.0,
-        "gap_pct": float(kw.get("gap_pct") or 0),
-        "rvol": float(kw.get("rvol") or 1),
+        "vwap": kw.get("vwap_v"), "or_high": kw.get("or_h"), "or_low": kw.get("or_l"),
+        "or_day": None, "swing_high": kw.get("sh"), "swing_low": kw.get("sl"),
+        "rel_spy": float(kw.get("rel_spy") or 0), "rel_iwm": 0.0, "quality": 0.0,
+        "gap_pct": float(kw.get("gap_pct") or 0), "rvol": float(kw.get("rvol") or 1),
         "bias_15": "FLAT",
     }
