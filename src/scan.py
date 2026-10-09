@@ -13,7 +13,18 @@ def run_scan(
     cfg: dict,
     include_news: bool = True,
 ) -> tuple[Regime, list[Idea]]:
-    risk_cfg = cfg.get("risk", {})
+    risk_cfg = dict(cfg.get("risk", {}) or {})
+    zock_mode = bool(cfg.get("_zock_mode", False))
+    if zock_mode:
+        z = dict(cfg.get("zock", {}) or {})
+        risk_cfg["_zock"] = True
+        for k in ("min_price", "max_price", "min_avg_volume", "min_atr_pct", "max_atr_pct",
+                  "min_confluence", "min_rvol", "max_gap_pct_hard", "atr_stop_mult",
+                  "reward_risk_t1", "reward_risk_t2"):
+            if k in z:
+                risk_cfg[k] = z[k]
+        risk_cfg["min_avg_volume"] = float(z.get("min_avg_volume", 150000))
+        risk_cfg["min_avg_volume_mid"] = float(z.get("min_avg_volume", 150000))
     benches = cfg.get("benchmarks", {})
     spy_t = benches.get("spy", "SPY")
     qqq_t = benches.get("qqq", "QQQ")
