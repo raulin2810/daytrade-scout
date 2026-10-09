@@ -145,3 +145,19 @@ scalable:
   prefer_amount_eur: true
   watchlist_source: scalable_cli
   last_sync: "2026-10-09"
+
+# Nur-Spaß-Modus: hohe Volatilität / mögliche Extrem-Moves (max 5% Kapital)
+zock:
+  max_budget_pct: 0.05
+  max_ideas: 3
+  min_price: 0.2
+  max_price: 40.0
+  min_avg_volume: 150000
+  min_atr_pct: 4.0
+  max_atr_pct: 45.0
+  min_confluence: 2
+  min_rvol: 1.5
+  max_gap_pct_hard: 25.0
+  atr_stop_mult: 1.6
+  reward_risk_t1: 2.0
+  reward_risk_t2: 4.0
